@@ -377,6 +377,44 @@ impl Object {
         self.maps.get_mut(name.as_ref())
     }
 
+    /// Get a reference to a type safe map with the name `name` if one exists and satisfies the
+    /// constraints of the typed map.
+    ///
+    /// # Examples
+    ///
+    /// Using one of the provided aliases.
+    /// ```no_run
+    /// use libbpf_rs::{Object, typed_map};
+    ///
+    /// # let object: Object = todo!();
+    /// object.typed_map::<_, typed_map::aliases::Hash>("my-hash-map");
+    /// ```
+    ///
+    /// Specifying the properties by hand.
+    /// ```no_run
+    /// use libbpf_rs::{Object, typed_map::{TypedMap, traits::{Atomic, PerCpu}}};
+    ///
+    /// # let object: Object = todo!();
+    /// object.typed_map::<_, TypedMap<Atomic, PerCpu>>("my-per-cpu-hash-map");
+    /// ```
+    pub fn typed_map<'m, N, M>(&'m self, name: N) -> Option<Result<&'m M>>
+    where
+        N: AsRef<str>,
+        &'m M: TryFrom<&'m Map, Error = Error>,
+    {
+        self.map(name).map(TryFrom::try_from)
+    }
+
+    /// Get a mutable reference to a type safe map with the name `name` if one exists and satisfies
+    /// the constraints `S` and `C`.
+    pub fn typed_map_mut<'m, N, M>(&'m mut self, name: N) -> Option<Result<&'m mut M>>
+    where
+        N: AsRef<str>,
+        &'m mut M: TryFrom<&'m mut Map, Error = Error>,
+    {
+        self.map_mut(name).map(TryFrom::try_from)
+    }
+
     /// Get an iterator over references to all `Map`s.
     /// Note that this will include automatically generated .data, .rodata, .bss, and
     /// .kconfig maps. You may wish to filter this.

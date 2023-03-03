@@ -96,7 +96,7 @@ pub use crate::error::{Error, Result};
 pub use crate::iter::Iter;
 pub use crate::link::Link;
 pub use crate::linker::Linker;
-pub use crate::map::{Map, MapFlags, MapType, OpenMap};
+pub use crate::map::{typed_map, Map, MapFlags, MapType, OpenMap};
 pub use crate::object::{Object, ObjectBuilder, OpenObject};
 pub use crate::perf_buffer::{PerfBuffer, PerfBufferBuilder};
 pub use crate::print::{get_print, set_print, PrintCallback, PrintLevel};

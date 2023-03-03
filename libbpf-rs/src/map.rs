@@ -1,3 +1,5 @@
+pub mod typed_map;
+
 use core::ffi::c_void;
 use std::ffi::CStr;
 use std::fmt::Debug;
@@ -154,7 +156,7 @@ impl OpenMap {
 pub struct Map {
     fd: i32,
     name: String,
-    ty: libbpf_sys::bpf_map_type,
+    ty: MapType,
     key_size: u32,
     value_size: u32,
 
@@ -187,7 +189,8 @@ impl Map {
             return Err(Error::System(-fd));
         }
 
-        let ty = unsafe { libbpf_sys::bpf_map__type(ptr.as_ptr()) };
+        let ty = MapType::try_from(unsafe { libbpf_sys::bpf_map__type(ptr.as_ptr()) })
+            .map_err(|e| Error::Internal(format!("Invalid map type {}", e.number)))?;
         let key_size = unsafe { libbpf_sys::bpf_map__key_size(ptr.as_ptr()) };
         let value_size = unsafe { libbpf_sys::bpf_map__value_size(ptr.as_ptr()) };
 
@@ -213,10 +216,7 @@ impl Map {
 
     /// Retrieve type of the map.
     pub fn map_type(&self) -> MapType {
-        match MapType::try_from(self.ty) {
-            Ok(t) => t,
-            Err(_) => MapType::Unknown,
-        }
+        self.ty
     }
 
     /// Key size in bytes
@@ -313,6 +313,18 @@ impl Map {
             )));
         }
 
+        // SAFETY:
+        // We just checked that the current map is a per-cpu map
+        unsafe { self.lookup_percpu_unchecked(key, flags) }
+    }
+
+    /// # Safety
+    /// This map must be a per-cpu map.
+    unsafe fn lookup_percpu_unchecked(
+        &self,
+        key: &[u8],
+        flags: MapFlags,
+    ) -> Result<Option<Vec<Vec<u8>>>> {
         let val_size = self.value_size() as usize;
         let aligned_val_size = self.percpu_aligned_value_size();
         let out_size = self.percpu_buffer_size()?;
@@ -371,14 +383,16 @@ impl Map {
     ///
     /// `key` must have exactly [`Map::key_size()`] elements.
     pub fn delete(&mut self, key: &[u8]) -> Result<()> {
-        if key.len() != self.key_size() as usize {
-            return Err(Error::InvalidInput(format!(
-                "key_size {} != {}",
-                key.len(),
-                self.key_size()
-            )));
-        };
+        unsafe { self.delete_unchecked(key) }
+    }
 
+    /// Deletes an element from the map.
+    ///
+    /// # Safety
+    /// The caller must make sure they have exclusive access to the map, or that the map supports
+    /// atomic operations.
+    unsafe fn delete_unchecked(&self, key: &[u8]) -> Result<()> {
+        self.check_key_size(key)?;
         // SAFETY (Send + Sync):
         // bpf_map_delete_elem is MT-safe because all calls in it's body are MT-safe
         let ret =
@@ -442,15 +456,35 @@ impl Map {
             )));
         }
 
+        self.check_value_size(value)?;
+
+        // SAFETY: we have a mutable reference to `self` thus the compiler guarentees we are the
+        // only ones looking at this map.
+        unsafe { self.update_raw(key, value, flags) }
+    }
+
+    fn check_key_size(&self, key: &[u8]) -> Result<()> {
+        if key.len() != self.key_size() as usize {
+            Err(Error::InvalidInput(format!(
+                "key_size {} != {}",
+                key.len(),
+                self.key_size()
+            )))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn check_value_size(&self, value: &[u8]) -> Result<()> {
         if value.len() != self.value_size() as usize {
-            return Err(Error::InvalidInput(format!(
+            Err(Error::InvalidInput(format!(
                 "value_size {} != {}",
                 value.len(),
                 self.value_size()
-            )));
-        };
-
-        self.update_raw(key, value, flags)
+            )))
+        } else {
+            Ok(())
+        }
     }
 
     /// Update an element in an per-cpu map with one value per cpu.
@@ -468,13 +502,43 @@ impl Map {
             )));
         }
 
+        // SAFETY:
+        // - self is being taken by exclusive reference so we have exclusive access to this map
+        // - we have just checked that this map is a per-cpu one
+        unsafe { self.update_percpu_unchecked(key, values, flags) }
+    }
+
+    /// Internal function to update a per-cpu map. This does not check that the map is per-cpu or
+    /// that the number of values matches the number of cpus.
+    ///
+    /// # Safety
+    /// For the function to be safely called the caller must be sure that:
+    /// - this map is a per-cpu map.
+    /// - they have exclusive access to `self` or that this map supports atomic operations. Maps
+    /// that support atomic operations are:
+    ///     - [`MapType::*Hash`]
+    ///     - [`MapType::LpmTrie`]
+    ///
+    /// See [kernel documentation](https://www.kernel.org/doc/html/latest/bpf/maps.html) for more
+    /// information.
+    unsafe fn update_percpu_unchecked<B>(
+        &self,
+        key: &[u8],
+        values: &[B],
+        flags: MapFlags,
+    ) -> Result<()>
+    where
+        B: AsRef<[u8]>,
+    {
         if values.len() != num_possible_cpus()? {
-            return Err(Error::InvalidInput(format!(
+            Err(Error::InvalidInput(format!(
                 "number of values {} != number of cpus {}",
                 values.len(),
                 num_possible_cpus()?
-            )));
-        };
+            )))
+        } else {
+            Ok(())
+        }?;
 
         let val_size = self.value_size() as usize;
         let aligned_val_size = self.percpu_aligned_value_size();
@@ -484,6 +548,7 @@ impl Map {
         value_buf.resize(buf_size, 0);
 
         for (i, val) in values.iter().enumerate() {
+            let val = val.as_ref();
             if val.len() != val_size {
                 return Err(Error::InvalidInput(format!(
                     "value size for cpu {} is {} != {}",
@@ -497,12 +562,31 @@ impl Map {
                 .copy_from_slice(val);
         }
 
-        self.update_raw(key, &value_buf, flags)
+        // SAFETY:
+        // - the caller is making sure we are have exclusive access or that the map supports atomic
+        //  operations
+        // - the caller made sure the number of values is equal to the number of cpus, we made sure
+        //  that each value was of the expected size, that makes the len of value_buf (ncpus *
+        //  val_size) valid.
+        unsafe { self.update_raw(key, &value_buf, flags) }
     }
 
     /// Internal function to update a map. This does not check the length of the
     /// supplied value.
-    fn update_raw(&mut self, key: &[u8], value: &[u8], flags: MapFlags) -> Result<()> {
+    ///
+    /// # Safety
+    /// Two clauses must be met for this function to be safely called:
+    ///  - The size of the value must be equal to self.value_size()
+    ///  - We are sure we have exclusive access to this map, as this will mutate the map, or that
+    ///  this map supports atomic operations. Maps that support atomic operations are:
+    ///     - [`MapType::*Hash`]
+    ///     - [`MapType::LpmTrie`]
+    ///
+    /// See [`man 2 bpf`](https://man7.org/linux/man-pages/man2/bpf.2.html), section about
+    /// `BPF_MAP_TYPE_HASH`
+    unsafe fn update_raw(&self, key: &[u8], value: &[u8], flags: MapFlags) -> Result<()> {
+        debug_assert_eq!(value.len(), self.value_size() as usize);
+
         if key.len() != self.key_size() as usize {
             return Err(Error::InvalidInput(format!(
                 "key_size {} != {}",
@@ -567,7 +651,6 @@ impl Map {
             None => (util::str_to_cstring("")?, "".to_string()),
         };
 
-        let map_type = map_type.into();
         let map_name_ptr = {
             if map_name_str.as_bytes().is_empty() {
                 null()
@@ -578,7 +661,7 @@ impl Map {
 
         let fd = unsafe {
             libbpf_sys::bpf_map_create(
-                map_type,
+                libbpf_sys::bpf_map_type::from(map_type),
                 map_name_ptr,
                 key_size,
                 value_size,
