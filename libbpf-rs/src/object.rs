@@ -408,6 +408,15 @@ impl Object {
     }
 }
 
+// SAFETY: The only operations allowed to be performed on `Object` are accesses to normal rust
+// types. Thus if those types can be sent to other threads, so can object.
+//
+// The only operation that actually uses `self.ptr` is destruction, which is safe to be called from
+// any thread. This can be proven by reading the implementation of the method, sadly it's not
+// documented.
+unsafe impl Send for Object {}
+unsafe impl Sync for Object {}
+
 impl Drop for Object {
     fn drop(&mut self) {
         unsafe {
