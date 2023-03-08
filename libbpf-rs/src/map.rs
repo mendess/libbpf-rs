@@ -162,6 +162,11 @@ pub struct Map {
     ptr: Option<NonNull<libbpf_sys::bpf_map>>,
 }
 
+// This is true as long as the `set_print` function safety requirements are upheld and for as long
+// as the safety comments about the libbpf_sys function calls remain true.
+unsafe impl Send for Map {}
+unsafe impl Sync for Map {}
+
 impl Map {
     /// Create a [`Map`] from a [`libbpf_sys::bpf_map`].
     ///
@@ -245,7 +250,12 @@ impl Map {
         let path_ptr = path_c.as_ptr();
 
         let ret = match self.ptr {
-            Some(ptr) => unsafe { libbpf_sys::bpf_map__pin(ptr.as_ptr(), path_ptr) },
+            Some(ptr) => unsafe {
+                // SAFETY (Send + Sync):
+                // bpf_map__pin is MT-safe because all calls (except for pr_* calls)
+                // in it's body are MT-safe
+                libbpf_sys::bpf_map__pin(ptr.as_ptr(), path_ptr)
+            },
             None => unsafe { libbpf_sys::bpf_obj_pin(self.fd, path_ptr) },
         };
 
@@ -259,7 +269,12 @@ impl Map {
             Some(ptr) => {
                 let path_c = util::path_to_cstring(path)?;
                 let path_ptr = path_c.as_ptr();
-                let ret = unsafe { libbpf_sys::bpf_map__unpin(ptr.as_ptr(), path_ptr) };
+                let ret = unsafe {
+                    // SAFETY (Send + Sync):
+                    // bpf_map__unpin is MT-safe because all calls (except for pr_* calls)
+                    // in it's body are MT-safe
+                    libbpf_sys::bpf_map__unpin(ptr.as_ptr(), path_ptr)
+                };
                 util::parse_ret(ret)
             }
             None => match std::fs::remove_file(path) {
@@ -326,6 +341,8 @@ impl Map {
 
         let mut out: Vec<u8> = Vec::with_capacity(out_size);
 
+        // SAFETY (Send + Sync):
+        // bpf_map_lookup_elem_flags is MT-safe because all calls in it's body are MT-safe
         let ret = unsafe {
             libbpf_sys::bpf_map_lookup_elem_flags(
                 self.fd,
@@ -362,6 +379,8 @@ impl Map {
             )));
         };
 
+        // SAFETY (Send + Sync):
+        // bpf_map_delete_elem is MT-safe because all calls in it's body are MT-safe
         let ret =
             unsafe { libbpf_sys::bpf_map_delete_elem(self.fd, key.as_ptr() as *const c_void) };
         util::parse_ret(ret)
@@ -384,6 +403,8 @@ impl Map {
 
         let mut out: Vec<u8> = Vec::with_capacity(self.value_size() as usize);
 
+        // SAFETY (Send + Sync):
+        // bpf_map_lookup_and_delete_elem is MT-safe because all calls in it's body are MT-safe
         let ret = unsafe {
             libbpf_sys::bpf_map_lookup_and_delete_elem(
                 self.fd,
@@ -490,6 +511,8 @@ impl Map {
             )));
         };
 
+        // SAFETY (Send + Sync):
+        // bpf_map_update_elem is MT-safe because all calls in it's body are MT-safe
         let ret = unsafe {
             libbpf_sys::bpf_map_update_elem(
                 self.fd,
@@ -509,6 +532,8 @@ impl Map {
     /// immutable from user space until its destruction. However, read and write
     /// permissions for BPF programs to the map remain unchanged.
     pub fn freeze(&self) -> Result<()> {
+        // SAFETY (Send + Sync):
+        // bpf_map_freeze is MT-safe because all calls in it's body are MT-safe
         let ret = unsafe { libbpf_sys::bpf_map_freeze(self.fd) };
 
         util::parse_ret(ret)
@@ -595,6 +620,8 @@ impl Map {
         };
 
         util::create_bpf_entity_checked(|| unsafe {
+            // SAFETY (Send + Sync):
+            // bpf_map__attach_struct_ops is MT-safe because all calls in it's body are MT-safe
             libbpf_sys::bpf_map__attach_struct_ops(ptr.as_ptr())
         })
         .map(|ptr| unsafe {
@@ -712,6 +739,8 @@ impl<'a> Iterator for MapKeyIter<'a> {
     fn next(&mut self) -> Option<Self::Item> {
         let prev = self.prev.as_ref().map_or(ptr::null(), |p| p.as_ptr());
 
+        // SAFETY (Send + Sync):
+        // bpf_map_get_next_key is MT-safe because all calls in it's body are MT-safe
         let ret = unsafe {
             libbpf_sys::bpf_map_get_next_key(self.map.fd(), prev as _, self.next.as_mut_ptr() as _)
         };

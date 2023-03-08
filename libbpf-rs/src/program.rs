@@ -377,6 +377,8 @@ impl Program {
 
     /// Retrieve the type of the program.
     pub fn prog_type(&self) -> ProgramType {
+        // SAFETY (Send + Sync):
+        // bpf_program__type is MT-safe because all calls in it's body are MT-safe.
         match ProgramType::try_from(unsafe { libbpf_sys::bpf_program__type(self.ptr.as_ptr()) }) {
             Ok(ty) => ty,
             Err(_) => ProgramType::Unknown,
@@ -385,16 +387,22 @@ impl Program {
 
     /// Returns a file descriptor to the underlying program.
     pub fn fd(&self) -> i32 {
+        // SAFETY (Send + Sync):
+        // bpf_program__fd is MT-safe because all calls in it's body are MT-safe.
         unsafe { libbpf_sys::bpf_program__fd(self.ptr.as_ptr()) }
     }
 
     /// Returns flags that have been set for the program.
     pub fn flags(&self) -> u32 {
+        // SAFETY (Send + Sync):
+        // bpf_program__flags is MT-safe because all calls in it's body are MT-safe.
         unsafe { libbpf_sys::bpf_program__flags(self.ptr.as_ptr()) }
     }
 
     /// Retrieve the attach type of the program.
     pub fn attach_type(&self) -> ProgramAttachType {
+        // SAFETY (Send + Sync):
+        // bpf_program__expected_attach_type is MT-safe because all calls in it's body are MT-safe.
         match ProgramAttachType::try_from(unsafe {
             libbpf_sys::bpf_program__expected_attach_type(self.ptr.as_ptr())
         }) {
@@ -409,6 +417,8 @@ impl Program {
         let path_c = util::path_to_cstring(path)?;
         let path_ptr = path_c.as_ptr();
 
+        // SAFETY (Send + Sync):
+        // bpf_program__type is MT-safe because all calls (except pr_* calls) in it's body are MT-safe.
         let ret = unsafe { libbpf_sys::bpf_program__pin(self.ptr.as_ptr(), path_ptr) };
         util::parse_ret(ret)
     }
@@ -419,6 +429,8 @@ impl Program {
         let path_c = util::path_to_cstring(path)?;
         let path_ptr = path_c.as_ptr();
 
+        // SAFETY (Send + Sync):
+        // bpf_program__type is MT-safe because all calls (except pr_* calls) in it's body are MT-safe.
         let ret = unsafe { libbpf_sys::bpf_program__unpin(self.ptr.as_ptr(), path_ptr) };
         util::parse_ret(ret)
     }
@@ -438,6 +450,8 @@ impl Program {
     /// [cgroup](https://www.kernel.org/doc/html/latest/admin-guide/cgroup-v2.html).
     pub fn attach_cgroup(&mut self, cgroup_fd: i32) -> Result<Link> {
         util::create_bpf_entity_checked(|| unsafe {
+            // SAFETY (Send + Sync):
+            // bpf_program__type is MT-safe because all calls (except pr_* calls) in it's body are MT-safe.
             libbpf_sys::bpf_program__attach_cgroup(self.ptr.as_ptr(), cgroup_fd)
         })
         .map(|ptr| unsafe {
@@ -449,6 +463,8 @@ impl Program {
     /// Attach this program to a [perf event](https://linux.die.net/man/2/perf_event_open).
     pub fn attach_perf_event(&mut self, pfd: i32) -> Result<Link> {
         util::create_bpf_entity_checked(|| unsafe {
+            // SAFETY (Send + Sync):
+            // bpf_program__type is MT-safe because all calls (except pr_* calls) in it's body are MT-safe.
             libbpf_sys::bpf_program__attach_perf_event(self.ptr.as_ptr(), pfd)
         })
         .map(|ptr| unsafe {
@@ -746,6 +762,8 @@ impl Program {
     ///
     /// Please see note in [`OpenProgram::insn_cnt`].
     pub fn insn_cnt(&self) -> usize {
+        // SAFETY (Send + Sync):
+        // bpf_program__type is MT-safe because all calls in it's body are MT-safe.
         unsafe { libbpf_sys::bpf_program__insn_cnt(self.ptr.as_ptr()) as usize }
     }
 
@@ -755,6 +773,8 @@ impl Program {
     ///
     pub fn insns(&self) -> &[libbpf_sys::bpf_insn] {
         let count = self.insn_cnt();
+        // SAFETY (Send + Sync):
+        // bpf_program__type is MT-safe because all calls in it's body are MT-safe.
         let ptr = unsafe { libbpf_sys::bpf_program__insns(self.ptr.as_ptr()) };
         unsafe { std::slice::from_raw_parts(ptr, count) }
     }
